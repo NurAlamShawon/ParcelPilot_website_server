@@ -19,7 +19,7 @@ const client = new MongoClient(uri, {
 });
 
 //for payment
-const stripe = require("stripe")(process.env.SECRECT_KEY_PAYMENT, {
+const stripe = require("stripe")(process.env.PAYMENT_KEY, {
   apiVersion: "2025-05-28.basil",
 });
 
