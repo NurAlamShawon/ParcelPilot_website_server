@@ -8,14 +8,14 @@ const port = process.env.PORT || 3000;
 app.use(express.json());
 app.use(cors());
 
-const uri = `mongodb+srv://${process.env.DB_USERNAME}:${process.env.DB_PASSWORD}@cluster0.tbuverl.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`
+const uri = `mongodb+srv://${process.env.DB_USERNAME}:${process.env.DB_PASSWORD}@cluster0.tbuverl.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
     strict: true,
     deprecationErrors: true,
-  }
+  },
 });
 
 //for access token
@@ -73,17 +73,25 @@ async function run() {
 
     const database = client.db("ParcelPilot");
     const parcelcollection = database.collection("parcels");
-    // get data
+    // get parcel
 
     app.get("/parcels", async (req, res) => {
-      const category = req.query.category;
+      const email = req.query.category;
       const query = {};
-      if (category) {
-        query.category = category;
+      if (email) {
+        query.email = email;
       }
-      const cursor = parcelcollection.find(query);
-      const result = await cursor.toArray();
-      res.send(result);
+      try {
+        const result = await parcelcollection
+          .find(query)
+          .sort({ creation_date: -1 }) // Sort by date descending
+          .toArray();
+
+        res.send(result);
+      } catch (error) {
+        console.error("Error fetching sorted parcels:", error);
+        res.status(500).send({ message: "Internal server error" });
+      }
     });
 
     app.get("/parcels/:id", async (req, res) => {
@@ -93,11 +101,21 @@ async function run() {
       res.send(result);
     });
 
-    // // post book
+    // post parcel
     app.post("/parcels", async (req, res) => {
       console.log("data posted", req.body);
       const newbook = req.body;
       const result = await parcelcollection.insertOne(newbook);
+      res.send(result);
+    });
+
+    //parcel delete
+    app.delete("/parcels/:id", async (req, res) => {
+      const id = req.params.id;
+
+      const query = { _id: new ObjectId(id) };
+      const result = await parcelcollection.deleteOne(query);
+
       res.send(result);
     });
 
@@ -137,33 +155,6 @@ async function run() {
     //   res.send(result);
     // });
 
-    // app.delete("/borrow/:id", async (req, res) => {
-    //   const id = req.params.id;
-
-    //   //update quantity of book
-    //   const filter = { _id: new ObjectId(id) };
-    //   const book = await bookcollection.findOne(filter);
-    //   const count = book.quantity + 1;
-    //   console.log(count, book.quantity);
-    //   const update = {
-    //     $set: {
-    //       quantity: count,
-    //     },
-    //   };
-
-    //   const option = { upset: true };
-    //   const result2 = await bookcollection.updateOne(filter, update, option);
-
-
-
-    //    //delete from borrow database
-
-    //   const query = { _id: id };
-    //   const result = await borrowcollection.deleteOne(query);
-
-    //   res.send(result, result2);
-    // });
-
     // app.post("/borrow", async (req, res) => {
     //   //update quantity of book
     //   const id = String(req.body._id);
@@ -178,8 +169,6 @@ async function run() {
 
     //   const option = { upset: true };
     //   const result2 = await bookcollection.updateOne(filter, update, option);
-
-
 
     //   //post to borrow database
 
