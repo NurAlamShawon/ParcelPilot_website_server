@@ -18,6 +18,35 @@ const client = new MongoClient(uri, {
   },
 });
 
+//for payment
+const stripe = require("stripe")(process.env.SECRECT_KEY_PAYMENT, {
+  apiVersion: "2025-05-28.basil",
+});
+
+app.use(express.static("public"));
+
+const YOUR_DOMAIN = "http://localhost:3000";
+
+//post payment
+
+app.post("/create-payment-intent", async (req, res) => {
+  const amountInCent = req.body.amountInCent;
+
+  try {
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: amountInCent, // Amount in cents
+      currency: "usd",
+      payment_method_types: ["card"],
+      // Optional: Add metadata or a customer ID
+      // metadata: {order_id: '6735'}
+    });
+
+    res.send({ clientSecret: paymentIntent.client_secret });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 //for access token
 
 // var admin = require("firebase-admin");
@@ -104,8 +133,8 @@ async function run() {
     // post parcel
     app.post("/parcels", async (req, res) => {
       console.log("data posted", req.body);
-      const newbook = req.body;
-      const result = await parcelcollection.insertOne(newbook);
+      const parcel = req.body;
+      const result = await parcelcollection.insertOne(parcel);
       res.send(result);
     });
 
@@ -117,6 +146,91 @@ async function run() {
       const result = await parcelcollection.deleteOne(query);
 
       res.send(result);
+    });
+
+    // Payment
+
+    const paymentcollection = database.collection("payments");
+
+    //payment data get
+
+    app.get("/payments", async (req, res) => {
+      const email = req.query.email;
+      const query = {};
+      if (email) {
+        query.email = email;
+      }
+
+      try {
+        const payments = await paymentcollection
+          .find(query)
+          .sort({ paidAt: -1 }) // descending order (latest first)
+          .toArray();
+
+        res.send(payments);
+      } catch (error) {
+        console.error("Error fetching payments:", error);
+        res.status(500).send({ error: "Failed to fetch payment records" });
+      }
+    });
+
+    //get payment by Id
+
+    app.get("/payments/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await paymentcollection.findOne(query);
+      res.send(result);
+    });
+
+    //post payment info
+
+    app.post("/payments", async (req, res) => {
+      const {
+        amount,
+        currency,
+        tracking_id,
+        _id, // parcel id
+        email,
+        transactionId,
+        paymentMethod,
+        paidAt,
+      } = req.body;
+
+      try {
+        // 1. Save payment info
+        const paymentDoc = {
+          amount,
+          currency,
+          tracking_id,
+          parcel_id: _id,
+          email,
+          transactionId,
+          paymentMethod,
+          paidAt: new Date(paidAt),
+        };
+
+        const insertResult = await paymentcollection.insertOne(paymentDoc);
+
+        // 2. Update parcel to "paid"
+        const updateResult = await parcelcollection.updateOne(
+          { _id: new ObjectId(String(_id)) },
+          {
+            $set: {
+              payment_status: "paid",
+            },
+          }
+        );
+
+        res.send({
+          message: "Payment recorded and parcel updated",
+          paymentId: insertResult.insertedId,
+          updated: updateResult.modifiedCount > 0,
+        });
+      } catch (error) {
+        console.error("Payment error:", error);
+        res.status(500).send({ error: "Failed to store payment info" });
+      }
     });
 
     // //update book
