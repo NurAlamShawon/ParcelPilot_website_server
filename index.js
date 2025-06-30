@@ -25,7 +25,6 @@ const stripe = require("stripe")(process.env.SECRECT_KEY_PAYMENT, {
 
 app.use(express.static("public"));
 
-const YOUR_DOMAIN = "http://localhost:3000";
 
 //post payment
 
