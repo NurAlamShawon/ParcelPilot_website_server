@@ -18,13 +18,54 @@ const client = new MongoClient(uri, {
   },
 });
 
+//for access token
+
+var admin = require("firebase-admin");
+
+const decoded = Buffer.from(process.env.FIRE_SERVICE_KEY, "base64").toString(
+  "utf8"
+);
+var serviceAccount = JSON.parse(decoded);
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
+
+// // middleware for verify token
+
+const verifyFirebaseToken = async (req, res, next) => {
+  const authHeader = req.headers?.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).send({ message: "unauthorized access" });
+  }
+
+  const token = authHeader.split(" ")[1];
+
+  try {
+    const decode = await admin.auth().verifyIdToken(token);
+    req.decoded = decode;
+    next();
+  } catch (err) {
+    return res.status(403).send({ message: "unauthorized" });
+  }
+};
+
+// //middleware for verify email
+
+const verifyEmail = (req, res, next) => {
+  if (req.query.email !== req.decoded.email) {
+    console.log("decoded", req.decoded);
+    return res.status(403).send({ message: "unauthorized access" });
+  }
+  next();
+};
+
 //for payment
 const stripe = require("stripe")(process.env.PAYMENT_KEY, {
   apiVersion: "2025-05-28.basil",
 });
 
 app.use(express.static("public"));
-
 
 //post payment
 
@@ -46,48 +87,6 @@ app.post("/create-payment-intent", async (req, res) => {
   }
 });
 
-//for access token
-
-// var admin = require("firebase-admin");
-
-// const decoded = Buffer.from(process.env.FIRE_SERVICE_KEY, "base64").toString(
-//   "utf8"
-// );
-// var serviceAccount = JSON.parse(decoded);
-
-// admin.initializeApp({
-//   credential: admin.credential.cert(serviceAccount),
-// });
-
-//middleware for verify token
-
-// const verifyFirebaseToken = async (req, res, next) => {
-//   const authHeader = req.headers?.authorization;
-//   if (!authHeader || !authHeader.startsWith("Bearer ")) {
-//     return res.status(401).send({ message: "unauthorized access" });
-//   }
-
-//   const token = authHeader.split(" ")[1];
-
-//   try {
-//     const decode = await admin.auth().verifyIdToken(token);
-//     req.decoded = decode;
-//     next();
-//   } catch (err) {
-//     return res.status(403).send({ message: "unauthorized" });
-//   }
-// };
-
-// //middleware for verify email
-
-// const verifyEmail = (req, res, next) => {
-//   if (req.query.email !== req.decoded.email) {
-//     console.log("decoded", req.decoded);
-//     return res.status(403).send({ message: "unauthorized access" });
-//   }
-//   next();
-// };
-
 async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
@@ -97,13 +96,13 @@ async function run() {
     //   "Pinged your deployment. You successfully connected to MongoDB!"
     // );
 
-
     const database = client.db("ParcelPilot");
     const parcelcollection = database.collection("parcels");
     // get parcel
 
-    app.get("/parcels", async (req, res) => {
+    app.get("/parcels", verifyFirebaseToken, verifyEmail, async (req, res) => {
       const email = req.query.category;
+      console.log(req.headers);
       const query = {};
       if (email) {
         query.email = email;
@@ -121,12 +120,17 @@ async function run() {
       }
     });
 
-    app.get("/parcels/:id", async (req, res) => {
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await parcelcollection.findOne(query);
-      res.send(result);
-    });
+    app.get(
+      "/parcels/:id",
+      verifyFirebaseToken,
+      verifyEmail,
+      async (req, res) => {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const result = await parcelcollection.findOne(query);
+        res.send(result);
+      }
+    );
 
     // post parcel
     app.post("/parcels", async (req, res) => {
@@ -152,7 +156,7 @@ async function run() {
 
     //payment data get
 
-    app.get("/payments", async (req, res) => {
+    app.get("/payments", verifyFirebaseToken, verifyEmail, async (req, res) => {
       const email = req.query.email;
       const query = {};
       if (email) {
@@ -174,12 +178,17 @@ async function run() {
 
     //get payment by Id
 
-    app.get("/payments/:id", async (req, res) => {
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await paymentcollection.findOne(query);
-      res.send(result);
-    });
+    app.get(
+      "/payments/:id",
+      verifyFirebaseToken,
+      verifyEmail,
+      async (req, res) => {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const result = await paymentcollection.findOne(query);
+        res.send(result);
+      }
+    );
 
     //post payment info
 
@@ -231,155 +240,97 @@ async function run() {
       }
     });
 
+    //For track parcel
+    const trackingcollection = database.collection("trackings");
 
+    // post tracking
+    app.post("/trackings", async (req, res) => {
+      const { tracking_id, status, location, updated_by } = req.body;
 
+      const newTracking = {
+        tracking_id,
+        status,
+        location,
+        updated_by,
+        timestamp: new Date().toISOString(),
+      };
 
+      const result = await trackingcollection.insertOne(newTracking);
+      res.send(result);
+    });
 
+    //get tracking sorted
+    app.get("/trackings/:tracking_id", async (req, res) => {
+      const tracking_id = req.params.tracking_id;
 
+      const updates = await trackingcollection
+        .find({ tracking_id })
+        .sort({ timestamp: 1 }) // ascending = oldest to latest
+        .toArray();
 
+      res.send(updates);
+    });
 
-//For track parcel
-const trackingcollection = database.collection("trackings");
+    const userscollection = database.collection("users");
 
-// post tracking
-app.post("/trackings", async (req, res) => {
-  const { tracking_id, status, location, updated_by } = req.body;
+    //post user
 
-  const newTracking = {
-    tracking_id,
-    status,
-    location,
-    updated_by,
-    timestamp: new Date().toISOString(),
-  };
+    app.post("/users", async (req, res) => {
+      const { name, email, role, created_At, last_log_in } = req.body;
 
-  const result = await trackingCollection.insertOne(newTracking);
-  res.send(result);
-});
+      if (!email || !name) {
+        return res.status(400).send({ error: "Missing name or email" });
+      }
 
-//get tracking sorted
-app.get("/trackings/:tracking_id", async (req, res) => {
-  const tracking_id = req.params.tracking_id;
+      try {
+        const existingUser = await userscollection.findOne({ email });
 
-  const updates = await trackingcollection
-    .find({ tracking_id })
-    .sort({ timestamp: 1 }) // ascending = oldest to latest
-    .toArray();
+        if (existingUser) {
+          return res.status(200).send(existingUser); // already exists
+        }
 
-  res.send(updates);
-});
+        const newUser = {
+          name,
+          email,
+          role: role || "user", // fallback to 'user'
+          created_At: created_At || new Date().toISOString(),
+          last_log_in: last_log_in || new Date().toISOString(),
+        };
 
+        await userscollection.insertOne(newUser);
+        res.status(201).send(newUser);
+      } catch (err) {
+        console.error("User save failed:", err);
+        res.status(500).send({ error: "Internal server error" });
+      }
+    });
 
+    //Rider servers
 
+    const ridercollection = database.collection("riders");
 
-const userscollection=database.collection('users');
+    //post rider
+    app.post("/riders", async (req, res) => {
+      const rider = req.body;
+      const result = await ridercollection.insertOne(rider);
+      res.send(result);
+    });
+    //pending rider info get
 
+    app.get("/riders/pending", async (req, res) => {
+      const pendingRiders = await ridercollection
+        .find({ status: "pending" })
+        .toArray();
+      res.send(pendingRiders);
+    });
 
-//post user
-
-app.post("/users", async (req, res) => {
-  const { name, email, role, created_At,last_log_in } = req.body;
-
-  if (!email || !name) {
-    return res.status(400).send({ error: "Missing name or email" });
-  }
-
-  try {
-    const existingUser = await userscollection.findOne({ email });
-
-    if (existingUser) {
-      return res.status(200).send(existingUser); // already exists
-    }
-
-    const newUser = {
-      name,
-      email,
-      role: role || "user", // fallback to 'user'
-      created_At: created_At || new Date().toISOString(),
-      last_log_in: last_log_in || new Date().toISOString(),
-    };
-
-    await userscollection.insertOne(newUser);
-    res.status(201).send(newUser);
-  } catch (err) {
-    console.error("User save failed:", err);
-    res.status(500).send({ error: "Internal server error" });
-  }
-});
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    // //update book
-
-    // app.put("/books/:id", async (req, res) => {
-    //   const id = req.params.id;
-    //   const filter = { _id: new ObjectId(id) };
-    //   const book = req.body;
-    //   const update = {
-    //     $set: {
-    //       image: book.image,
-    //       name: book.name,
-    //       author: book.author,
-    //       category: book.category,
-    //       rating: book.rating,
-    //     },
-    //   };
-
-    //   const option = { upset: true };
-    //   const result = await bookcollection.updateOne(filter, update, option);
-    //   res.send(result);
-    // });
-
-    // /*Borrow*/
-
-    // const borrowcollection = database.collection("borrow");
-
-    // app.get("/borrow", verifyFirebaseToken, verifyEmail, async (req, res) => {
-    //   const email = req.query.email;
-    //   const query = {};
-    //   if (email) {
-    //     query.email = email;
-    //   }
-    //   const cursor = borrowcollection.find(query);
-    //   const result = await cursor.toArray();
-    //   res.send(result);
-    // });
-
-    // app.post("/borrow", async (req, res) => {
-    //   //update quantity of book
-    //   const id = String(req.body._id);
-    //   const filter = { _id: new ObjectId(id) };
-    //   const book = await bookcollection.findOne(filter);
-    //   const count = book.quantity - 1;
-    //   const update = {
-    //     $set: {
-    //       quantity: count,
-    //     },
-    //   };
-
-    //   const option = { upset: true };
-    //   const result2 = await bookcollection.updateOne(filter, update, option);
-
-    //   //post to borrow database
-
-    //   const newborrow = req.body;
-    //   const result = await borrowcollection.insertOne(newborrow);
-
-    //   res.send(result, result2);
-    // });
-
-    // Send a ping to confirm a successful connection
+    //get active rider
+    app.get("/riders/active", async (req, res) => {
+      const activeRiders = await ridercollection
+        .find({ status: "active" })
+        .toArray();
+      res.send(activeRiders);
+    });
   } finally {
     // Ensures that the client will close when you finish/error
     // await client.close();
