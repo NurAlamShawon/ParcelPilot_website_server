@@ -97,7 +97,6 @@ async function run() {
     //   "Pinged your deployment. You successfully connected to MongoDB!"
     // );
 
-    /*books*/
 
     const database = client.db("ParcelPilot");
     const parcelcollection = database.collection("parcels");
@@ -231,6 +230,95 @@ async function run() {
         res.status(500).send({ error: "Failed to store payment info" });
       }
     });
+
+
+
+
+
+
+
+
+//For track parcel
+const trackingcollection = database.collection("trackings");
+
+// post tracking
+app.post("/trackings", async (req, res) => {
+  const { tracking_id, status, location, updated_by } = req.body;
+
+  const newTracking = {
+    tracking_id,
+    status,
+    location,
+    updated_by,
+    timestamp: new Date().toISOString(),
+  };
+
+  const result = await trackingCollection.insertOne(newTracking);
+  res.send(result);
+});
+
+//get tracking sorted
+app.get("/trackings/:tracking_id", async (req, res) => {
+  const tracking_id = req.params.tracking_id;
+
+  const updates = await trackingcollection
+    .find({ tracking_id })
+    .sort({ timestamp: 1 }) // ascending = oldest to latest
+    .toArray();
+
+  res.send(updates);
+});
+
+
+
+
+const userscollection=database.collection('users');
+
+
+//post user
+
+app.post("/users", async (req, res) => {
+  const { name, email, role, created_At,last_log_in } = req.body;
+
+  if (!email || !name) {
+    return res.status(400).send({ error: "Missing name or email" });
+  }
+
+  try {
+    const existingUser = await userscollection.findOne({ email });
+
+    if (existingUser) {
+      return res.status(200).send(existingUser); // already exists
+    }
+
+    const newUser = {
+      name,
+      email,
+      role: role || "user", // fallback to 'user'
+      created_At: created_At || new Date().toISOString(),
+      last_log_in: last_log_in || new Date().toISOString(),
+    };
+
+    await userscollection.insertOne(newUser);
+    res.status(201).send(newUser);
+  } catch (err) {
+    console.error("User save failed:", err);
+    res.status(500).send({ error: "Internal server error" });
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     // //update book
 
