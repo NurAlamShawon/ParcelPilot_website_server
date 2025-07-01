@@ -325,12 +325,29 @@ async function run() {
     });
 
     //get active rider
-    app.get("/riders/active", async (req, res) => {
+    app.get("/riders/accepted", async (req, res) => {
       const activeRiders = await ridercollection
-        .find({ status: "active" })
+        .find({ status: "accepted" })
         .toArray();
       res.send(activeRiders);
     });
+
+    // Update rider status (Accept/Reject)
+    app.patch("/riders/:id/status", async (req, res) => {
+      const { id } = req.params;
+      const { status } = req.body;
+      const result = await ridercollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status } }
+      );
+      res.send(result);
+    });
+
+
+
+
+
+    
   } finally {
     // Ensures that the client will close when you finish/error
     // await client.close();
