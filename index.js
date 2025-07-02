@@ -46,7 +46,7 @@ const verifyFirebaseToken = async (req, res, next) => {
     req.decoded = decode;
     next();
   } catch (err) {
-    return res.status(403).send({ message: "unauthorized" });
+    return res.status(401).send({ message: "unauthorized" });
   }
 };
 
@@ -98,27 +98,60 @@ async function run() {
 
     const database = client.db("ParcelPilot");
     const parcelcollection = database.collection("parcels");
+    const ridercollection = database.collection("riders");
+    const paymentcollection = database.collection("payments");
+    const userscollection = database.collection("users");
+
+
+
+
+    
+    //middleware for verify admin
+
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.decoded.email;
+      console.log("Decoded Email:", req.decoded.email);
+      const query = { email };
+      const user = await userscollection.findOne(query);
+      if (!user || user.role !== "admin") {
+        return res.status(403).send({ message: "forbidden" });
+      }
+
+      next();
+    };
+
     // get parcel
 
-    app.get("/parcels", verifyFirebaseToken, verifyEmail, async (req, res) => {
-      const email = req.query.category;
-      console.log(req.headers);
-      const query = {};
-      if (email) {
-        query.email = email;
-      }
+    app.get("/parcels", async (req, res) => {
       try {
-        const result = await parcelcollection
+        const { email, payment_status, delivery_status } = req.query;
+
+        const query = {};
+
+        if (email) {
+          query.email = email;
+        }
+        if (payment_status) {
+          query.payment_status = payment_status;
+        }
+        if (delivery_status) {
+          query.delivery_status = delivery_status;
+        }
+
+        const parcels = await parcelcollection
           .find(query)
-          .sort({ creation_date: -1 }) // Sort by date descending
+          .sort({ creation_date: -1 })
           .toArray();
 
-        res.send(result);
+        console.log("Parcels found:", parcels.length);
+        res.send(parcels);
       } catch (error) {
-        console.error("Error fetching sorted parcels:", error);
+        console.error("Error fetching parcels:", error);
         res.status(500).send({ message: "Internal server error" });
       }
     });
+
+    //get parcel by id
 
     app.get(
       "/parcels/:id",
@@ -149,9 +182,71 @@ async function run() {
       res.send(result);
     });
 
-    // Payment
+    //update parcel
 
-    const paymentcollection = database.collection("payments");
+    app.patch(
+      "/parcels/:id/assign",
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        const parcelId = req.params.id;
+        const { riderId,ridername } = req.body;
+
+        if (!riderId) {
+          return res.status(400).json({ error: "Missing riderId" });
+        }
+
+        try {
+          const parcelObjectId = new ObjectId(parcelId);
+          const riderObjectId = new ObjectId(String(riderId));
+
+          // 1. Update the parcel's status and assign the rider
+          const parcelUpdate = await parcelcollection.updateOne(
+            { _id: parcelObjectId },
+            {
+              $set: {
+                delivery_status: "in-transit",
+                assigned_rider: riderId,
+                assigned_rider_name:ridername,
+              },
+              $push: {
+                logs: {
+                  status: "in-transit",
+                  timestamp: new Date(),
+                  note: "Rider assigned and parcel is now in-transit",
+                },
+              },
+            }
+          );
+
+          // 2. Update the rider's work status
+          const riderUpdate = await ridercollection.updateOne(
+            { _id: riderObjectId },
+            {
+              $set: {
+                work_status: "in-delivery",
+              },
+            }
+          );
+
+          if (
+            parcelUpdate.modifiedCount === 0 ||
+            riderUpdate.modifiedCount === 0
+          ) {
+            return res
+              .status(404)
+              .json({ error: "Update failed. Parcel or rider not found." });
+          }
+
+          res.json({ message: "Rider assigned and statuses updated." });
+        } catch (err) {
+          console.error("Assign error:", err);
+          res.status(500).json({ error: "Internal server error" });
+        }
+      }
+    );
+
+    // Payment
 
     //payment data get
 
@@ -269,20 +364,6 @@ async function run() {
       res.send(updates);
     });
 
-    const userscollection = database.collection("users");
-
-    //middleware for verify admin
-
-    const verifyAdmin = async (req, res, next) => {
-      const email = req.decoded.email;
-      const query = { email };
-      const user = await userscollection.findOne(query);
-      if (!user || role !== "admin") {
-        return res.status(403).send({ message: "forbidden" });
-      }
-
-      next();
-    };
 
     //post user
 
@@ -319,7 +400,7 @@ async function run() {
     //  GET user
     app.get("/users", verifyFirebaseToken, verifyAdmin, async (req, res) => {
       const emailQuery = req.query.email;
-
+      console.log(emailQuery);
       const regex = new RegExp(emailQuery, "i");
 
       try {
@@ -335,31 +416,26 @@ async function run() {
     });
 
     // get role
-    app.get(
-      "/users/role",
-      async (req, res) => {
-        const { email } = req.query;
+    app.get("/users/role", async (req, res) => {
+      const { email } = req.query;
 
-        if (!email) {
-          return res
-            .status(400)
-            .json({ error: "Email query param is required" });
-        }
-
-        try {
-          const user = await userscollection.findOne({
-            email: email.toLowerCase(),
-          });
-          if (!user) {
-            return res.status(404).json({ error: "User not found" });
-          }
-          res.json({ role: user.role });
-        } catch (error) {
-          console.error("Error fetching role:", error);
-          res.status(500).json({ error: "Internal server error" });
-        }
+      if (!email) {
+        return res.status(400).json({ error: "Email query param is required" });
       }
-    );
+
+      try {
+        const user = await userscollection.findOne({
+          email: email.toLowerCase(),
+        });
+        if (!user) {
+          return res.status(404).json({ error: "User not found" });
+        }
+        res.json({ role: user.role });
+      } catch (error) {
+        console.error("Error fetching role:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    });
 
     //make user to admin
     app.put("/users/:id/make-admin", async (req, res) => {
@@ -403,14 +479,36 @@ async function run() {
 
     //Rider servers
 
-    const ridercollection = database.collection("riders");
-
     //post rider
     app.post("/riders", async (req, res) => {
       const rider = req.body;
       const result = await ridercollection.insertOne(rider);
       res.send(result);
     });
+
+    //get rider by its district
+    app.get("/riders", async (req, res) => {
+      try {
+        const { district } = req.query;
+
+        if (!district) {
+          return res.status(400).json({ error: "District is required" });
+        }
+
+        const acceptedRiders = await ridercollection
+          .find({
+            status: "accepted",
+            district: district, // Use this if your field is named 'district'
+          })
+          .toArray();
+
+        res.status(200).json(acceptedRiders);
+      } catch (error) {
+        console.error("Error fetching accepted riders:", error);
+        res.status(500).json({ error: "Internal Server Error" });
+      }
+    });
+
     //pending rider info get
 
     app.get(
