@@ -122,8 +122,7 @@ async function run() {
 
     app.get(
       "/parcels/:id",
-      verifyFirebaseToken,
-      verifyEmail,
+
       async (req, res) => {
         const id = req.params.id;
         const query = { _id: new ObjectId(id) };
@@ -156,7 +155,7 @@ async function run() {
 
     //payment data get
 
-    app.get("/payments", verifyFirebaseToken, verifyEmail, async (req, res) => {
+    app.get("/payments", async (req, res) => {
       const email = req.query.email;
       const query = {};
       if (email) {
@@ -180,8 +179,7 @@ async function run() {
 
     app.get(
       "/payments/:id",
-      verifyFirebaseToken,
-      verifyEmail,
+
       async (req, res) => {
         const id = req.params.id;
         const query = { _id: new ObjectId(id) };
@@ -273,9 +271,22 @@ async function run() {
 
     const userscollection = database.collection("users");
 
+    //middleware for verify admin
+
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.decoded.email;
+      const query = { email };
+      const user = await userscollection.findOne(query);
+      if (!user || role !== "admin") {
+        return res.status(403).send({ message: "forbidden" });
+      }
+
+      next();
+    };
+
     //post user
 
-    app.post("/users", async (req, res) => {
+    app.post("/users", verifyFirebaseToken, verifyAdmin, async (req, res) => {
       const { name, email, role, created_At, last_log_in } = req.body;
 
       if (!email || !name) {
@@ -305,6 +316,91 @@ async function run() {
       }
     });
 
+    //  GET user
+    app.get("/users", verifyFirebaseToken, verifyAdmin, async (req, res) => {
+      const emailQuery = req.query.email;
+
+      const regex = new RegExp(emailQuery, "i");
+
+      try {
+        const users = await userscollection
+          .find({ email: { $regex: regex } })
+          .limit(10)
+          .toArray();
+        res.send(users);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ error: err.message });
+      }
+    });
+
+    // get role
+    app.get(
+      "/users/role",
+      async (req, res) => {
+        const { email } = req.query;
+
+        if (!email) {
+          return res
+            .status(400)
+            .json({ error: "Email query param is required" });
+        }
+
+        try {
+          const user = await userscollection.findOne({
+            email: email.toLowerCase(),
+          });
+          if (!user) {
+            return res.status(404).json({ error: "User not found" });
+          }
+          res.json({ role: user.role });
+        } catch (error) {
+          console.error("Error fetching role:", error);
+          res.status(500).json({ error: "Internal server error" });
+        }
+      }
+    );
+
+    //make user to admin
+    app.put("/users/:id/make-admin", async (req, res) => {
+      const userId = req.params.id;
+
+      try {
+        const result = await userscollection.updateOne(
+          { _id: new ObjectId(String(userId)) },
+          {
+            $set: {
+              role: "admin",
+            },
+          }
+        );
+        res.send(result);
+      } catch (error) {
+        console.error("Error updating role:", error);
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // make admin to user
+    app.put("/users/:id/remove-admin", async (req, res) => {
+      const userId = req.params.id;
+
+      try {
+        const result = await userscollection.updateOne(
+          { _id: new ObjectId(String(userId)) },
+          {
+            $set: {
+              role: "user",
+            },
+          }
+        );
+        res.send(result);
+      } catch (error) {
+        console.error("Error updating role:", error);
+        res.status(500).json({ error: error.message });
+      }
+    });
+
     //Rider servers
 
     const ridercollection = database.collection("riders");
@@ -317,37 +413,53 @@ async function run() {
     });
     //pending rider info get
 
-    app.get("/riders/pending", async (req, res) => {
-      const pendingRiders = await ridercollection
-        .find({ status: "pending" })
-        .toArray();
-      res.send(pendingRiders);
-    });
+    app.get(
+      "/riders/pending",
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        const pendingRiders = await ridercollection
+          .find({ status: "pending" })
+          .toArray();
+        res.send(pendingRiders);
+      }
+    );
 
     //get active rider
-    app.get("/riders/accepted", async (req, res) => {
-      const activeRiders = await ridercollection
-        .find({ status: "accepted" })
-        .toArray();
-      res.send(activeRiders);
-    });
+    app.get(
+      "/riders/accepted",
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        const activeRiders = await ridercollection
+          .find({ status: "accepted" })
+          .toArray();
+        res.send(activeRiders);
+      }
+    );
 
     // Update rider status (Accept/Reject)
     app.patch("/riders/:id/status", async (req, res) => {
-      const { id } = req.params;
       const { status } = req.body;
+      //update role in the user
+
+      if (status === "accepted") {
+      }
+      const email = req.body.email;
+      const query = { email };
+
+      const updateResult = await userscollection.updateOne(query, {
+        $set: { role: "rider" },
+      });
+
+      const { id } = req.params;
+
       const result = await ridercollection.updateOne(
         { _id: new ObjectId(id) },
         { $set: { status } }
       );
-      res.send(result);
+      res.send(result, updateResult);
     });
-
-
-
-
-
-    
   } finally {
     // Ensures that the client will close when you finish/error
     // await client.close();
