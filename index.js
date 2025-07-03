@@ -50,16 +50,6 @@ const verifyFirebaseToken = async (req, res, next) => {
   }
 };
 
-// //middleware for verify email
-
-const verifyEmail = (req, res, next) => {
-  if (req.query.email !== req.decoded.email) {
-    console.log("decoded", req.decoded);
-    return res.status(403).send({ message: "unauthorized access" });
-  }
-  next();
-};
-
 //for payment
 const stripe = require("stripe")(process.env.PAYMENT_KEY, {
   apiVersion: "2025-05-28.basil",
@@ -102,10 +92,6 @@ async function run() {
     const paymentcollection = database.collection("payments");
     const userscollection = database.collection("users");
 
-
-
-
-    
     //middleware for verify admin
 
     const verifyAdmin = async (req, res, next) => {
@@ -114,6 +100,20 @@ async function run() {
       const query = { email };
       const user = await userscollection.findOne(query);
       if (!user || user.role !== "admin") {
+        return res.status(403).send({ message: "forbidden" });
+      }
+
+      next();
+    };
+
+    //middleware for verify admin
+
+    const verifyRider = async (req, res, next) => {
+      const email = req.decoded.email;
+      console.log("Decoded Email:", req.decoded.email);
+      const query = { email };
+      const user = await userscollection.findOne(query);
+      if (!user || user.role !== "rider") {
         return res.status(403).send({ message: "forbidden" });
       }
 
@@ -166,8 +166,16 @@ async function run() {
 
     // post parcel
     app.post("/parcels", async (req, res) => {
-      console.log("data posted", req.body);
       const parcel = req.body;
+
+      parcel.logs = [
+        {
+          status: "Created",
+          timestamp: new Date(),
+          note: "Parcel created by user",
+        },
+      ];
+
       const result = await parcelcollection.insertOne(parcel);
       res.send(result);
     });
@@ -182,6 +190,149 @@ async function run() {
       res.send(result);
     });
 
+    // Get parcels assigned to rider with status not-collected
+    app.get(
+      "/parcels/rider/pending",
+      verifyFirebaseToken,
+      verifyRider,
+      async (req, res) => {
+        try {
+          const riderEmail = req.query.email;
+          const status = req.query.status;
+          console.log("Rider email:", riderEmail);
+
+          if (!riderEmail) {
+            console.log("Missing email");
+            return res.status(400).send({ error: "Email required" });
+          }
+
+          const parcels = await parcelcollection
+            .find({ assigned_rider_email: riderEmail, delivery_status: status })
+            .sort({ creation_date: -1 })
+            .toArray();
+
+          res.send(parcels);
+        } catch (error) {
+          console.error("Error fetching pending parcels:", error); // Log the specific error on the server
+          res.status(500).json({ message: "Internal Server Error" }); // Send a generic 500 to the client
+        }
+      }
+    );
+
+    // Update parcel to in-transit and log it
+    app.patch(
+      "/parcels/:id/start-delivery",
+      verifyFirebaseToken,
+      verifyRider,
+      async (req, res) => {
+        const { id } = req.params;
+        const { riderName } = req.body;
+
+        const update = {
+          $set: { delivery_status: "Parcel-picked" },
+          $push: {
+            logs: {
+              message: `Rider ${riderName} received Picked, going to nearest warehouse`,
+              timestamp: new Date(),
+            },
+          },
+        };
+
+        const result = await parcelcollection.updateOne(
+          { _id: new ObjectId(id) },
+          update
+        );
+        res.send(result);
+      }
+    );
+
+    //update data after delivery
+    app.patch(
+      "/parcels/:id/mark-delivered",
+      verifyFirebaseToken,
+      verifyRider,
+      async (req, res) => {
+        const { id } = req.params;
+        const riderEmail = req.query.email;
+
+        const parcel = await parcelcollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!parcel) {
+          return res.status(404).send({ error: "Parcel not found" });
+        }
+
+        const totalCost = parseFloat(parcel.total_cost || 0);
+        const sameDistrict = parcel.senderDistrict === parcel.receiverDistrict;
+        const calculatedEarning = sameDistrict
+          ? totalCost * 0.8
+          : totalCost * 0.3;
+
+        // 1. Update parcel
+        const updateParcel = await parcelcollection.updateOne(
+          { _id: new ObjectId(id) },
+          {
+            $set: { delivery_status: "Delivered" },
+            $push: {
+              logs: {
+                status: "Delivered",
+                timestamp: new Date(),
+                note: "Parcel successfully delivered by rider",
+              },
+            },
+          }
+        );
+
+        // 2. Update rider earnings and total_earned
+        const updateRider = await ridercollection.updateOne(
+          { email: riderEmail },
+          {
+            $inc: {
+              earnings: calculatedEarning, // current balance
+              total_earned: calculatedEarning, // cumulative income
+            },
+          },
+          { upsert: true }
+        );
+
+        res.send({
+          message: "Parcel delivered and earnings added",
+          parcelUpdate: updateParcel,
+          riderEarningUpdate: updateRider,
+        });
+      }
+    );
+
+    //completed parcel info
+    app.get(
+      "/parcels/rider/completed",
+      verifyFirebaseToken,
+      verifyRider,
+      async (req, res) => {
+        try {
+          const riderEmail = req.query.email;
+
+          if (!riderEmail) {
+            return res.status(400).send({ error: "Rider email is required" });
+          }
+
+          const deliveredParcels = await parcelcollection
+            .find({
+              assigned_rider_email: riderEmail,
+              delivery_status: "Delivered",
+            })
+            .sort({ delivery_date: -1 }) // optional: if you store a delivery_date
+            .toArray();
+
+          res.send(deliveredParcels);
+        } catch (err) {
+          console.error("Error fetching completed deliveries:", err);
+          res.status(500).send({ error: "Internal Server Error" });
+        }
+      }
+    );
+
     //update parcel
 
     app.patch(
@@ -190,7 +341,7 @@ async function run() {
       verifyAdmin,
       async (req, res) => {
         const parcelId = req.params.id;
-        const { riderId,ridername } = req.body;
+        const { riderId, ridername, rider_email } = req.body;
 
         if (!riderId) {
           return res.status(400).json({ error: "Missing riderId" });
@@ -205,15 +356,16 @@ async function run() {
             { _id: parcelObjectId },
             {
               $set: {
-                delivery_status: "in-transit",
+                delivery_status: "Rider-assigned",
                 assigned_rider: riderId,
-                assigned_rider_name:ridername,
+                assigned_rider_name: ridername,
+                assigned_rider_email: rider_email,
               },
               $push: {
                 logs: {
                   status: "in-transit",
                   timestamp: new Date(),
-                  note: "Rider assigned and parcel is now in-transit",
+                  note: "Rider assigned and parcel is now picking up",
                 },
               },
             }
@@ -312,12 +464,19 @@ async function run() {
 
         const insertResult = await paymentcollection.insertOne(paymentDoc);
 
-        // 2. Update parcel to "paid"
+        // 2. Update parcel to "paid" and add timeline log
         const updateResult = await parcelcollection.updateOne(
           { _id: new ObjectId(String(_id)) },
           {
             $set: {
               payment_status: "paid",
+            },
+            $push: {
+              logs: {
+                status: "Paid",
+                timestamp: new Date(paidAt),
+                note: `Payment of ৳${amount} completed via ${paymentMethod}`,
+              },
             },
           }
         );
@@ -353,21 +512,37 @@ async function run() {
     });
 
     //get tracking sorted
-    app.get("/trackings/:tracking_id", async (req, res) => {
-      const tracking_id = req.params.tracking_id;
+    app.get("/trackings/:trackingId", async (req, res) => {
+      try {
+        const { trackingId } = req.params;
 
-      const updates = await trackingcollection
-        .find({ tracking_id })
-        .sort({ timestamp: 1 }) // ascending = oldest to latest
-        .toArray();
+        const parcel = await parcelcollection.findOne({
+          tracking_id: trackingId,
+        });
 
-      res.send(updates);
+        if (!parcel) {
+          return res.status(404).send({ error: "Parcel not found" });
+        }
+
+        if (!parcel.logs || parcel.logs.length === 0) {
+          return res.send([]);
+        }
+
+        // Sort logs by timestamp (optional)
+        const sortedLogs = parcel.logs.sort(
+          (a, b) => new Date(a.timestamp) - new Date(b.timestamp)
+        );
+
+        res.send(sortedLogs);
+      } catch (error) {
+        console.error("Tracking fetch error:", error);
+        res.status(500).send({ error: "Internal server error" });
+      }
     });
-
 
     //post user
 
-    app.post("/users", verifyFirebaseToken, verifyAdmin, async (req, res) => {
+    app.post("/users", async (req, res) => {
       const { name, email, role, created_At, last_log_in } = req.body;
 
       if (!email || !name) {
@@ -378,6 +553,7 @@ async function run() {
         const existingUser = await userscollection.findOne({ email });
 
         if (existingUser) {
+          console.log("Existing user?", existingUser);
           return res.status(200).send(existingUser); // already exists
         }
 
@@ -558,6 +734,154 @@ async function run() {
       );
       res.send(result, updateResult);
     });
+
+    //particular rider profile
+
+    app.get("/riders/profile", async (req, res) => {
+      const email = req.query.email;
+      if (!email) {
+        return res.status(400).send({ error: "Email is required" });
+      }
+
+      try {
+        const rider = await ridercollection.findOne({ email });
+        if (!rider) {
+          return res.status(404).send({ error: "Rider not found" });
+        }
+
+        res.send(rider);
+      } catch (error) {
+        console.error("Error fetching rider profile:", error);
+        res.status(500).send({ error: "Internal Server Error" });
+      }
+    });
+    //rider cashout
+    app.patch(
+      "/riders/cashout",
+      verifyFirebaseToken,
+      verifyRider,
+      async (req, res) => {
+        const { email } = req.body;
+
+        if (!email) return res.status(400).send({ error: "Email is required" });
+
+        try {
+          const rider = await ridercollection.findOne({ email });
+
+          if (!rider || rider.earnings <= 0) {
+            return res
+              .status(400)
+              .send({ error: "No earnings available to cash out." });
+          }
+
+          const cashoutAmount = rider.earnings;
+
+          const log = {
+            amount: cashoutAmount,
+            date: new Date(),
+            type: "cashout",
+          };
+
+          const update = await ridercollection.updateOne(
+            { email },
+            {
+              $set: { earnings: 0 },
+              $inc: { total_cashout: cashoutAmount }, // ✅ track cashout history
+              $push: { cashout_history: log },
+            }
+          );
+
+          res.send({ message: "Cashout successful", cashout: log });
+        } catch (error) {
+          console.error("Cashout error:", error);
+          res.status(500).send({ error: "Internal server error" });
+        }
+      }
+    );
+
+    //rider summart
+    app.get(
+      "/riders/summary",
+      verifyFirebaseToken,
+      verifyRider,
+      async (req, res) => {
+        const { email } = req.query;
+        if (!email) return res.status(400).send({ error: "Email required" });
+
+        const rider = await ridercollection.findOne(
+          { email },
+          { projection: { total_earned: 1, total_cashout: 1, earnings: 1 } }
+        );
+
+        if (!rider) return res.status(404).send({ error: "Rider not found" });
+
+        res.send({
+          totalEarned: rider.total_earned || 0,
+          totalCashout: rider.total_cashout || 0,
+          currentBalance: rider.earnings || 0,
+        });
+      }
+    );
+
+
+
+
+
+//all data about this database
+app.get("/admin/overview", async (req, res) => {
+  try {
+    const result = await parcelcollection.aggregate([
+      {
+        $facet: {
+          totalParcels: [{ $count: "count" }],
+          completedDeliveries: [
+            { $match: { delivery_status: "Delivered" } },
+            { $count: "count" }
+          ]
+        }
+      },
+      {
+        $addFields: {
+          totalParcels: { $arrayElemAt: ["$totalParcels.count", 0] },
+          completedDeliveries: { $arrayElemAt: ["$completedDeliveries.count", 0] }
+        }
+      }
+    ]).toArray();
+
+    const parcelStats = result[0];
+
+    const [totalUsers, totalRiders, pendingRiders] = await Promise.all([
+      userscollection.countDocuments({ role: "user" }),
+      userscollection.countDocuments({ role: "rider" }),
+      ridercollection.countDocuments({ status: "pending" }),
+    ]);
+
+    res.json({
+      totalParcels: parcelStats.totalParcels || 0,
+      completedDeliveries: parcelStats.completedDeliveries || 0,
+      totalUsers,
+      totalRiders,
+      pendingRiders
+    });
+  } catch (error) {
+    console.error("Aggregation error:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   } finally {
     // Ensures that the client will close when you finish/error
     // await client.close();
