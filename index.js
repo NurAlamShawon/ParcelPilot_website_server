@@ -263,7 +263,7 @@ async function run() {
           return res.status(404).send({ error: "Parcel not found" });
         }
 
-        const totalCost = parseFloat(parcel.total_cost || 0);
+        const totalCost = parseFloat(parcel.cost || 0);
         const sameDistrict = parcel.senderDistrict === parcel.receiverDistrict;
         const calculatedEarning = sameDistrict
           ? totalCost * 0.8
