@@ -122,7 +122,7 @@ async function run() {
 
     // get parcel
 
-    app.get("/parcels", async (req, res) => {
+    app.get("/parcels",verifyFirebaseToken, async (req, res) => {
       try {
         const { email, payment_status, delivery_status } = req.query;
 
@@ -219,7 +219,7 @@ async function run() {
       }
     );
 
-    // Update parcel to in-transit and log it
+    // Update parcel to Parcel-picked and log it
     app.patch(
       "/parcels/:id/start-delivery",
       verifyFirebaseToken,
@@ -288,6 +288,7 @@ async function run() {
         const updateRider = await ridercollection.updateOne(
           { email: riderEmail },
           {
+            $set: { work_status: "free" },
             $inc: {
               earnings: calculatedEarning, // current balance
               total_earned: calculatedEarning, // cumulative income
@@ -336,7 +337,7 @@ async function run() {
     //update parcel
 
     app.patch(
-      "/parcels/:id/assign",
+      "/parcels/assign/:id",
       verifyFirebaseToken,
       verifyAdmin,
       async (req, res) => {
@@ -363,7 +364,7 @@ async function run() {
               },
               $push: {
                 logs: {
-                  status: "in-transit",
+                  status: "Rider will pickedup parcel",
                   timestamp: new Date(),
                   note: "Rider assigned and parcel is now picking up",
                 },
@@ -799,7 +800,7 @@ async function run() {
       }
     );
 
-    //rider summart
+    //rider summary
     app.get(
       "/riders/summary",
       verifyFirebaseToken,
@@ -823,65 +824,51 @@ async function run() {
       }
     );
 
+    //all data about this database
+    app.get("/admin/overview", async (req, res) => {
+      try {
+        const result = await parcelcollection
+          .aggregate([
+            {
+              $facet: {
+                totalParcels: [{ $count: "count" }],
+                completedDeliveries: [
+                  { $match: { delivery_status: "Delivered" } },
+                  { $count: "count" },
+                ],
+              },
+            },
+            {
+              $addFields: {
+                totalParcels: { $arrayElemAt: ["$totalParcels.count", 0] },
+                completedDeliveries: {
+                  $arrayElemAt: ["$completedDeliveries.count", 0],
+                },
+              },
+            },
+          ])
+          .toArray();
 
+        const parcelStats = result[0];
 
+        const [totalUsers, totalRiders, pendingRiders] = await Promise.all([
+          userscollection.countDocuments({ role: "user" }),
+          userscollection.countDocuments({ role: "rider" }),
+          ridercollection.countDocuments({ status: "pending" }),
+        ]);
 
-
-//all data about this database
-app.get("/admin/overview", async (req, res) => {
-  try {
-    const result = await parcelcollection.aggregate([
-      {
-        $facet: {
-          totalParcels: [{ $count: "count" }],
-          completedDeliveries: [
-            { $match: { delivery_status: "Delivered" } },
-            { $count: "count" }
-          ]
-        }
-      },
-      {
-        $addFields: {
-          totalParcels: { $arrayElemAt: ["$totalParcels.count", 0] },
-          completedDeliveries: { $arrayElemAt: ["$completedDeliveries.count", 0] }
-        }
+        res.json({
+          totalParcels: parcelStats.totalParcels || 0,
+          completedDeliveries: parcelStats.completedDeliveries || 0,
+          totalUsers,
+          totalRiders,
+          pendingRiders,
+        });
+      } catch (error) {
+        console.error("Aggregation error:", error);
+        res.status(500).json({ error: "Internal Server Error" });
       }
-    ]).toArray();
-
-    const parcelStats = result[0];
-
-    const [totalUsers, totalRiders, pendingRiders] = await Promise.all([
-      userscollection.countDocuments({ role: "user" }),
-      userscollection.countDocuments({ role: "rider" }),
-      ridercollection.countDocuments({ status: "pending" }),
-    ]);
-
-    res.json({
-      totalParcels: parcelStats.totalParcels || 0,
-      completedDeliveries: parcelStats.completedDeliveries || 0,
-      totalUsers,
-      totalRiders,
-      pendingRiders
     });
-  } catch (error) {
-    console.error("Aggregation error:", error);
-    res.status(500).json({ error: "Internal Server Error" });
-  }
-});
-
-
-
-
-
-
-
-
-
-
-
-
-
-
   } finally {
     // Ensures that the client will close when you finish/error
     // await client.close();
