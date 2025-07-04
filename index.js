@@ -336,7 +336,7 @@ verifyFirebaseToken,
 
     //update parcel
 
-    app.patch(
+    app.put(
       "/parcels/assign/:id",
       verifyFirebaseToken,
       verifyAdmin,
@@ -358,7 +358,7 @@ verifyFirebaseToken,
             {
               $set: {
                 delivery_status: "Rider-assigned",
-                assigned_rider: riderId,
+                assigned_rider: String(riderId),
                 assigned_rider_name: ridername,
                 assigned_rider_email: rider_email,
               },
